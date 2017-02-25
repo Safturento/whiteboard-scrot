@@ -1,34 +1,80 @@
-from PIL import Image
 import sys
-from math import tan,degrees,radians
-import numpy
+from math import hypot, sqrt
+import numpy as np
+import cv2
 
-def find_coeffs(pa, pb):
-    matrix = []
-    for p1, p2 in zip(pa, pb):
-        matrix.append([p1[0], p1[1], 1, 0, 0, 0, -p2[0]*p1[0], -p2[0]*p1[1]])
-        matrix.append([0, 0, 0, p1[0], p1[1], 1, -p2[1]*p1[0], -p2[1]*p1[1]])
+calibrationPoints = []
+winName = 'Whiteboard Scrot'
+debugMode = True
 
-    A = numpy.matrix(matrix, dtype=numpy.float)
-    B = numpy.array(pb).reshape(8)
+def mouseHandler(event, x, y, flags, params):
+    if event == cv2.EVENT_LBUTTONDOWN:
+        if len(calibrationPoints) < 4:
+            calibrationPoints.append((x,y))
+        if debugMode: print(calibrationPoints)
+    elif event == cv2.EVENT_RBUTTONDOWN:pass
+    elif event == cv2.EVENT_RBUTTONUP:pass
+    elif event == cv2.EVENT_LBUTTONUP:pass
+    elif event == cv2.EVENT_MOUSEMOVE:pass
 
-    res = numpy.dot(numpy.linalg.inv(A.T * A) * A.T, B)
-    return numpy.array(res).reshape(8)
 
-image = Image.open('Capture.png')
+def transformImage(image, points):
+    # First lets ensure that the points are ordered correctly
+    pointSums = points.sum(axis=1)
+    pointDiffs = np.diff(points, axis=1)
 
-width,height = image.size
+    # Here we'll use sums and difference of points to find which end of
+    # the square they belong to
+    tl = points[np.argmin(pointSums)]
+    tr = points[np.argmin(pointDiffs)]
+    br = points[np.argmax(pointSums)]
+    bl = points[np.argmax(pointDiffs)]
 
-angle = 27
-d = int(height*tan(radians(angle)))
+    # Currently skewing towards minimum side lengths,
+    # need to test whether using min vs max matters for quality
+    width =  int(min(hypot(tr[0]-tl[0], tr[1]-tl[1]),
+                     hypot(br[0]-bl[0], br[1]-bl[1])))
+    height = int(min(hypot(bl[0]-tl[0], bl[1]-tl[1]),
+                     hypot(br[0]-tr[0], br[1]-tr[1])))
 
-coeffs = find_coeffs(
-	[(0, 0), (width, 0), (width, height), (0, height)],
-	[(-d, 0), (width+d, 0), (width, height), (0, height)])
+    return cv2.warpPerspective(
+        image,
+        cv2.getPerspectiveTransform(
+            np.float32(
+                (tl,tr,br,bl)
+            ),
+            np.float32((
+                (0,     0),
+                (width, 0),
+                (width, height),
+                (0,     height)
+            ))
+        ),
+        (width,height))
 
-skewed = image.transform((width,height), Image.PERSPECTIVE, coeffs, Image.BICUBIC)
-skewed.save('Skewed.png')
+def initialize(**kwargs):
+    window = cv2.namedWindow(winName)
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    cv2.setMouseCallback(winName, mouseHandler, 0)
 
-# I need to find out what these numbers do mathematically
-cropped = skewed.crop((.65*d,0,width-.65*d,height))
-cropped.save('Cropped.png')
+    while(True):
+        ret, frame = cap.read()
+
+        frame = cv2.flip(frame, 0)
+        frame = cv2.flip(frame, 1)
+        if 'points' in kwargs:
+            frame = transformImage(frame, kwargs['points'])
+        elif len(calibrationPoints) == 4:
+            frame = transformImage(frame, np.float32(calibrationPoints))
+
+        cv2.imshow(winName,frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+initialize()
